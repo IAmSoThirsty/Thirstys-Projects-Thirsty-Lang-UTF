@@ -1,0 +1,12 @@
+// T.A.R.L. Policy Example
+// Evaluates intents and returns ALLOW, DENY, or ESCALATE
+
+policy access_control
+
+when role == "admin" => ALLOW
+when role == "user" and level >= 3 => ALLOW
+when action == "delete" and resource == "critical" => ESCALATE
+when action == "read" and resource == "public" => ALLOW
+when action == "write" and resource == "system" => DENY
+when source == "external" and port > 1024 => DENY
+when count > 100 => ESCALATE

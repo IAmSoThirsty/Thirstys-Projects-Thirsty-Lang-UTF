@@ -1,0 +1,217 @@
+"""
+Thirsty-Lang Token Definitions
+All keyword tokens, operators, literals, and delimiters.
+"""
+from dataclasses import dataclass
+from enum import Enum, auto
+
+
+class TokenType(Enum):
+    # --- Core Keywords ---
+    DRINK = auto()
+    POUR = auto()
+    SIP = auto()
+    THIRSTY = auto()
+    HYDRATED = auto()
+    THIRST = auto()
+    QUENCH = auto()
+    REFILL = auto()
+    TIMES = auto()
+    GLASS = auto()
+    RESERVOIR = auto()
+    WELL = auto()
+    OF = auto()
+    FLOOD = auto()
+    DRIP = auto()
+    EVAPORATE = auto()
+    CONDENSE = auto()
+    FOUNTAIN = auto()
+    RETURN = auto()
+    PARCHED = auto()
+    QUENCHED = auto()
+    EMPTY = auto()
+    MUT = auto()
+
+    # --- Module Keywords ---
+    IMPORT = auto()
+    FROM = auto()
+    AS = auto()
+
+    # --- Security Keywords ---
+    SHIELD = auto()
+    SANITIZE = auto()
+    ARMOR = auto()
+    MORPH = auto()
+    DETECT = auto()
+    DEFEND = auto()
+
+    # --- Thirst of Gods Keywords ---
+    CASCADE = auto()
+    THIS = auto()
+    NEW = auto()
+    PUBLIC = auto()
+    PRIVATE = auto()
+    AWAIT = auto()
+    SPILLAGE = auto()
+    CLEANUP = auto()
+    FINALLY = auto()
+    ERROR = auto()
+    THROW = auto()
+
+    # --- Policy Keywords ---
+    POLICY = auto()
+    WHEN = auto()
+    ALLOW = auto()
+    DENY = auto()
+    ESCALATE = auto()
+
+    # --- Declaration Keywords ---
+    ENUM = auto()
+    STRUCT = auto()
+    INTERFACE = auto()
+    SYMBOL = auto()
+
+    # --- Shadow Thirst Keywords ---
+    MUTATION = auto()
+    VALIDATED_CANONICAL = auto()
+    INVARIANT = auto()
+    SHADOW = auto()
+    CANONICAL = auto()
+    PROMOTE = auto()
+    REJECT = auto()
+    GOVERNED = auto()
+    CORE = auto()
+    MODULE = auto()
+    
+    # --- Literals ---
+    INT = auto()
+    FLOAT = auto()
+    STRING = auto()
+    BOOL_TRUE = auto()
+    BOOL_FALSE = auto()
+    NONE = auto()
+    ERROR_LITERAL = auto()
+
+    # --- Delimiters ---
+    LPAREN = auto()
+    RPAREN = auto()
+    LBRACE = auto()
+    RBRACE = auto()
+    LBRACKET = auto()
+    RBRACKET = auto()
+    COMMA = auto()
+    DOT = auto()
+    COLON = auto()
+    SEMICOLON = auto()
+    EQ = auto()
+
+    # --- Multi-char Operators ---
+    ARROW = auto()      # ->
+    PIPE = auto()        # |
+    BACKSLASH = auto()   # \ (lambda)
+    HATHAT = auto()      # ^ (AND-combine)
+    PIPEPIPE = auto()    # || (OR-combine)
+
+    # --- Single-char Operators ---
+    PLUS = auto()
+    MINUS = auto()
+    STAR = auto()
+    SLASH = auto()
+    PERCENT = auto()
+    EQEQ = auto()
+    NE = auto()
+    LT = auto()
+    GT = auto()
+    LE = auto()
+    GE = auto()
+    AND = auto()
+    OR = auto()
+    NOT = auto()
+    ASSIGN = auto()
+
+    # --- Others ---
+    IDENTIFIER = auto()
+    EOF = auto()
+
+
+KEYWORDS = {
+    "drink": TokenType.DRINK,
+    "pour": TokenType.POUR,
+    "sip": TokenType.SIP,
+    "thirsty": TokenType.THIRSTY,
+    "hydrated": TokenType.HYDRATED,
+    "thirst": TokenType.THIRST,
+    "quench": TokenType.QUENCH,
+    "refill": TokenType.REFILL,
+    "times": TokenType.TIMES,
+    "glass": TokenType.GLASS,
+    "reservoir": TokenType.RESERVOIR,
+    "well": TokenType.WELL,
+    "of": TokenType.OF,
+    "flood": TokenType.FLOOD,
+    "drip": TokenType.DRIP,
+    "evaporate": TokenType.EVAPORATE,
+    "condense": TokenType.CONDENSE,
+    "fountain": TokenType.FOUNTAIN,
+    "return": TokenType.RETURN,
+    "parched": TokenType.PARCHED,
+    "quenched": TokenType.QUENCHED,
+    "empty": TokenType.EMPTY,
+    "mut": TokenType.MUT,
+    "import": TokenType.IMPORT,
+    "from": TokenType.FROM,
+    "as": TokenType.AS,
+    "shield": TokenType.SHIELD,
+    "sanitize": TokenType.SANITIZE,
+    "armor": TokenType.ARMOR,
+    "morph": TokenType.MORPH,
+    "detect": TokenType.DETECT,
+    "defend": TokenType.DEFEND,
+    "cascade": TokenType.CASCADE,
+    "this": TokenType.THIS,
+    "new": TokenType.NEW,
+    "public": TokenType.PUBLIC,
+    "private": TokenType.PRIVATE,
+    "await": TokenType.AWAIT,
+    "spillage": TokenType.SPILLAGE,
+    "cleanup": TokenType.CLEANUP,
+    "finally": TokenType.FINALLY,
+    "error": TokenType.ERROR,
+    "throw": TokenType.THROW,
+    "policy": TokenType.POLICY,
+    "when": TokenType.WHEN,
+    "ALLOW": TokenType.ALLOW,
+    "DENY": TokenType.DENY,
+    "ESCALATE": TokenType.ESCALATE,
+    "mutation": TokenType.MUTATION,
+    "validated_canonical": TokenType.VALIDATED_CANONICAL,
+    "invariant": TokenType.INVARIANT,
+    "shadow": TokenType.SHADOW,
+    "canonical": TokenType.CANONICAL,
+    "promote": TokenType.PROMOTE,
+    "reject": TokenType.REJECT,
+    "governed": TokenType.GOVERNED,
+"enum": TokenType.ENUM,
+"struct": TokenType.STRUCT,
+"interface": TokenType.INTERFACE,
+"symbol": TokenType.SYMBOL,
+    "module": TokenType.MODULE,
+    "core": TokenType.CORE,
+    "and": TokenType.AND,
+    "or": TokenType.OR,
+    "not": TokenType.NOT,
+    "true": TokenType.BOOL_TRUE,
+    "false": TokenType.BOOL_FALSE,
+    "none": TokenType.NONE,
+}
+
+
+@dataclass
+class Token:
+    type: TokenType
+    lexeme: str
+    line: int = 1
+    col: int = 1
+
+    def __repr__(self):
+        return f"Token({self.type.name}, '{self.lexeme}', L{self.line}:{self.col})"

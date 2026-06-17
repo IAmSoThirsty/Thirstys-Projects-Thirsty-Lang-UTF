@@ -1,0 +1,10 @@
+module hello: core
+
+// A simple greeting function
+glass greet(name) {
+    return "hello, " + name + "!"
+}
+
+// Main execution
+drink main = greet("thirsty world")
+pour main

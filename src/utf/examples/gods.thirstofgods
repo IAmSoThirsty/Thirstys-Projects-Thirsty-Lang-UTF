@@ -1,0 +1,60 @@
+// Thirst of Gods Example
+// Demonstrates fountain (class), cascade (async), and spillage (error handling)
+
+module gods: core
+
+fountain Reservoir {
+    drink contents = []
+
+    glass push(val) {
+        mut contents = contents + [val]
+    }
+
+    glass pop() {
+        if size(contents) > 0 {
+            drink last = get(contents, size(contents) - 1)
+            mut contents = pop(contents)
+            return last
+        }
+        return null
+    }
+
+    glass size() {
+        return size(contents)
+    }
+}
+
+// Cascade (async) example
+glass async_process(items) {
+    drink results = []
+    for item in items {
+        drink result = cascade process_item(item)
+        mut results = results + [result]
+    }
+    return results
+}
+
+glass process_item(item) {
+    return "processed: " + item
+}
+
+// Spillage (error handling) example
+glass safe_process(item) {
+    spillage {
+        if item == null {
+            throw "cannot process null item"
+        }
+        return "ok: " + item
+    } cleanup {
+        // cleanup runs always
+        return null
+    }
+}
+
+// Main
+drink main = |>
+    drink r1 = safe_process("test")
+    r1
+|>
+
+main
