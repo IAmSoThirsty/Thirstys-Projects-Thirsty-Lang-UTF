@@ -41,13 +41,52 @@ When reporting, please include:
 git clone https://github.com/IAmSoThirsty/Thirstys-Projects-Thirsty-Lang-UTF.git
 cd Thirstys-Projects-Thirsty-Lang-UTF
 
-# Install in development mode
-pip install -e .
+# Create virtual environment
+python3.11 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install in development mode with dev dependencies
+pip install -e ".[dev]"
+
+# Install pre-commit hooks (optional but recommended)
+pre-commit install
+
+# Verify installation
+thirsty --version
+thirst-of-gods --help
+tarl --help
 ```
 
-### Code Standards
+### Development Workflow
+
+**Before committing:**
+
+```bash
+# Run tests
 python -m pytest tests/ -v
+
+# Format code (black)
+black src/ tests/
+
+# Lint code (ruff)
+ruff check src/ tests/ --fix
+
+# Type check
+mypy src/utf/
+
+# Or use pre-commit to run all checks
+pre-commit run --all-files
 ```
+
+**Pre-commit hooks** automatically run on every commit:
+- Whitespace trimming and EOF fixes
+- Black formatting
+- Ruff linting
+- pyproject.toml validation
+- Console script entry point validation
+- Version consistency check
+
+**If hooks fail**, fix the issues and `git add` again before committing.
 
 ### Code Standards
 
