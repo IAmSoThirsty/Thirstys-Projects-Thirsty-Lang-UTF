@@ -1,7 +1,7 @@
 """
-T.A.R.L. Core — Phase 1: Condition Algebra
+T.A.R.L. Core — Phase 1+2: Condition Algebra and Policy Parser
 
-SafeExpr now supports:
+Phase 1 — SafeExpr supports:
   - Nested attribute access: user.role.clearance
   - Full arithmetic: +, -, *, /, %
   - Set membership: value IN [...] / NOT IN [...]
@@ -9,12 +9,21 @@ SafeExpr now supports:
   - Temporal builtins: CURRENT_HOUR, CURRENT_DAY, CURRENT_WEEKDAY, etc.
   - String predicates: MATCHES, STARTS_WITH, ENDS_WITH, CONTAINS
   - Utility functions: LEN, LOWER, UPPER, ELAPSED_SINCE
-  - Universal/existential quantifiers: ALL(col, v -> cond), ANY(col, v -> cond)
+  - Universal/existential quantifiers: ALL(col, v -> cond), ANY(...)
+
+Phase 2 — PolicyParser supports:
+  - EXTENDS / RESTRICTS composition
+  - INCLUDE <name>|"<file>" [AS <alias>]
+  - STOP keyword (blocks parent fallthrough in EXTENDS)
+  - policy_set with combine UNION|INTERSECT|MAJORITY [...]
+  - Temporal versioning stubs: valid_from, valid_until, supersedes, on_expiry
+  - parse_all() for multi-policy files
 """
 import re
 import datetime
 from utf.tarl.spec import (
-    TarlVerdict, TarlDecision, TarlPolicy, TarlRule, DEFAULT_DENY
+    TarlVerdict, TarlDecision, TarlPolicy, TarlRule, DEFAULT_DENY,
+    CompositionOp, SetOp, TarlPolicyRef, TarlPolicySet,
 )
 
 # ── Token types ──────────────────────────────────────────────────────────────
@@ -84,34 +93,165 @@ class ExprToken:
 
 
 class PolicyParser:
-    """Parses TARL policy text into TarlPolicy objects."""
+    """Parses TARL policy text into TarlPolicy / TarlPolicySet objects."""
 
     RULE_RE = re.compile(
         r"when\s+(.+?)\s*=>\s*(ALLOW|DENY|ESCALATE)\s*"
     )
+    # policy <name> [EXTENDS|RESTRICTS <parent>] [v<ver>] [:]
+    POLICY_HEADER_RE = re.compile(
+        r"policy\s+(\w+)"
+        r"(?:\s+(EXTENDS|RESTRICTS)\s+(\w+))?"
+        r"(?:\s+v([\w.]+))?"
+        r"\s*:?"
+    )
+    POLICY_SET_HEADER_RE = re.compile(r"policy_set\s+(\w+)\s*:")
+    # INCLUDE "path/to/file.tarl" AS alias
+    # INCLUDE policy_name AS alias
+    INCLUDE_RE = re.compile(
+        r'INCLUDE\s+(?:"([^"]+)"|(\w+))'
+        r'(?:\s+AS\s+(\w+))?'
+    )
+    # combine UNION|INTERSECT|MAJORITY [p1, p2, ...]
+    COMBINE_RE = re.compile(
+        r"combine\s+(UNION|INTERSECT|MAJORITY)\s+\[([^\]]+)\]"
+    )
+    # default: ALLOW|DENY|ESCALATE
+    DEFAULT_RE = re.compile(
+        r"default\s*:\s*(ALLOW|DENY|ESCALATE)"
+    )
+    # valid_from|valid_until|supersedes|on_expiry: <value>
+    METADATA_RE = re.compile(
+        r"(valid_from|valid_until|supersedes|on_expiry)\s*:\s*(.+)"
+    )
+
+    @classmethod
+    def parse_all(cls, text: str) -> list:
+        """
+        Parse text containing one or more policy/policy_set blocks.
+        Returns a list of TarlPolicy and TarlPolicySet objects.
+        Bare rules (no policy header) accumulate into an 'unnamed' policy.
+        """
+        results = []
+        current_policy: TarlPolicy | None = None
+        current_set: TarlPolicySet | None = None
+
+        def _flush():
+            nonlocal current_policy, current_set
+            if current_policy is not None:
+                results.append(current_policy)
+                current_policy = None
+            if current_set is not None:
+                results.append(current_set)
+                current_set = None
+
+        for lineno, raw_line in enumerate(text.split("\n"), start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#") or line.startswith("//"):
+                continue
+
+            # ── policy_set header ─────────────────────────────────────────
+            m_ps = cls.POLICY_SET_HEADER_RE.match(line)
+            if m_ps:
+                _flush()
+                current_set = TarlPolicySet(name=m_ps.group(1))
+                continue
+
+            # ── policy header ─────────────────────────────────────────────
+            m_ph = cls.POLICY_HEADER_RE.match(line)
+            if m_ph:
+                _flush()
+                current_policy = TarlPolicy(source=line, name=m_ph.group(1))
+                if m_ph.group(2):
+                    current_policy.composition = CompositionOp(m_ph.group(2))
+                    current_policy.parent = m_ph.group(3)
+                if m_ph.group(4):
+                    current_policy.version = m_ph.group(4)
+                continue
+
+            # ── policy_set body ───────────────────────────────────────────
+            if current_set is not None:
+                m_combine = cls.COMBINE_RE.match(line)
+                if m_combine:
+                    op = SetOp(m_combine.group(1))
+                    names = [
+                        n.strip() for n in m_combine.group(2).split(",")
+                        if n.strip()
+                    ]
+                    current_set.groups.append((op, names))
+                    continue
+                m_def = cls.DEFAULT_RE.match(line)
+                if m_def:
+                    current_set.default_verdict = TarlVerdict(
+                        m_def.group(1)
+                    )
+                continue
+
+            # ── policy body ───────────────────────────────────────────────
+            if current_policy is None:
+                current_policy = TarlPolicy(source="", name="unnamed")
+
+            if line == "STOP":
+                current_policy.has_stop = True
+                continue
+
+            m_inc = cls.INCLUDE_RE.match(line)
+            if m_inc:
+                file_path = m_inc.group(1)
+                pol_name = m_inc.group(2)
+                alias = m_inc.group(3)
+                ref = TarlPolicyRef(
+                    name=file_path if file_path else pol_name,
+                    alias=alias,
+                    is_file=bool(file_path),
+                )
+                current_policy.includes.append(ref)
+                continue
+
+            m_meta = cls.METADATA_RE.match(line)
+            if m_meta:
+                key, val = m_meta.group(1), m_meta.group(2).strip()
+                if key == "valid_from":
+                    current_policy.valid_from = val
+                elif key == "valid_until":
+                    current_policy.valid_until = val
+                elif key == "supersedes":
+                    current_policy.supersedes = val
+                elif key == "on_expiry":
+                    try:
+                        current_policy.on_expiry = TarlVerdict(
+                            val.upper()
+                        )
+                    except ValueError:
+                        current_policy.on_expiry = None
+                continue
+
+            m_rule = cls.RULE_RE.match(line)
+            if m_rule:
+                condition = m_rule.group(1).strip()
+                verdict = TarlVerdict(m_rule.group(2).upper())
+                current_policy.rules.append(TarlRule(
+                    condition=condition,
+                    verdict=verdict,
+                    source_line=lineno,
+                ))
+
+        _flush()
+        return results
 
     @classmethod
     def parse(cls, text: str, name: str = "unnamed") -> TarlPolicy:
-        policy = TarlPolicy(source=text, name=name)
-        for i, line in enumerate(text.split("\n")):
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            if stripped.startswith("policy"):
-                parts = stripped.split()
-                if len(parts) > 1:
-                    policy.name = parts[1].rstrip(":")
-                continue
-            m = cls.RULE_RE.match(stripped)
-            if m:
-                condition = m.group(1).strip()
-                verdict = TarlVerdict(m.group(2).upper())
-                policy.rules.append(TarlRule(
-                    condition=condition,
-                    verdict=verdict,
-                    source_line=i + 1,
-                ))
-        return policy
+        """
+        Parse text and return the first TarlPolicy found.
+        Backward-compatible: name is used when no policy header is present.
+        """
+        items = cls.parse_all(text)
+        for item in items:
+            if isinstance(item, TarlPolicy):
+                if item.name == "unnamed" and name != "unnamed":
+                    item.name = name
+                return item
+        return TarlPolicy(source=text, name=name)
 
     @staticmethod
     def _tokenize(expr: str) -> list:
@@ -200,7 +340,8 @@ class PolicyParser:
                                   float(s) if is_float else int(s), start)
                     )
                 else:
-                    tokens.append(ExprToken(MINUS, "-", i)); i += 1
+                    tokens.append(ExprToken(MINUS, "-", i))
+                    i += 1
 
             # String literals
             elif c == '"':
@@ -220,7 +361,8 @@ class PolicyParser:
                 i += 1
                 s = []
                 while i < n and expr[i] != "'":
-                    s.append(expr[i]); i += 1
+                    s.append(expr[i])
+                    i += 1
                 i += 1
                 tokens.append(ExprToken(STRING, "".join(s), i))
 
@@ -399,7 +541,8 @@ class SafeExpr:
         cur = self.current()
 
         if cur.type == NOT and self._peek().type == IN:
-            self.advance(); self.advance()
+            self.advance()
+            self.advance()
             return ("not_in", left, self._parse_in_rhs())
 
         if cur.type == IN:
@@ -485,9 +628,11 @@ class SafeExpr:
         if tok.type == STRING:
             return ("string", self.advance().value)
         if tok.type == BOOL_TRUE:
-            self.advance(); return ("bool", True)
+            self.advance()
+            return ("bool", True)
         if tok.type == BOOL_FALSE:
-            self.advance(); return ("bool", False)
+            self.advance()
+            return ("bool", False)
         if tok.type == SOURCE:
             return ("source", self.advance().value)
 
@@ -648,12 +793,18 @@ class SafeExpr:
                 except (ValueError, TypeError):
                     return False
             try:
-                if op == EQEQ: return lv == rv
-                if op == NE:   return lv != rv
-                if op == LT:   return lv < rv
-                if op == GT:   return lv > rv
-                if op == LE:   return lv <= rv
-                if op == GE:   return lv >= rv
+                if op == EQEQ:
+                    return lv == rv
+                if op == NE:
+                    return lv != rv
+                if op == LT:
+                    return lv < rv
+                if op == GT:
+                    return lv > rv
+                if op == LE:
+                    return lv <= rv
+                if op == GE:
+                    return lv >= rv
             except TypeError:
                 return False
             return False

@@ -8,7 +8,7 @@ Permissive join:  a ∨ b = max(a, b)   — ALLOW beats all
 from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 # Safety ordering: DENY=0 < ESCALATE=1 < ALLOW=2
 _VERDICT_RANK: dict = {}
@@ -61,6 +61,33 @@ _VERDICT_RANK.update({
 })
 
 
+class CompositionOp(str, Enum):
+    """How a child policy composes with its parent."""
+    EXTENDS = "EXTENDS"
+    RESTRICTS = "RESTRICTS"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+class SetOp(str, Enum):
+    """How policies in a policy_set group are combined."""
+    UNION = "UNION"
+    INTERSECT = "INTERSECT"
+    MAJORITY = "MAJORITY"
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass
+class TarlPolicyRef:
+    """A reference to another policy in a composition directive."""
+    name: str
+    alias: Optional[str] = None
+    is_file: bool = False
+
+
 @dataclass
 class TarlRule:
     """A single `when <condition> => VERDICT` rule."""
@@ -74,15 +101,39 @@ class TarlRule:
 
 @dataclass
 class TarlPolicy:
-    """Ordered decision function over a context space: P = [r₁, r₂, ..., rₙ]."""
+    """Ordered decision function: P = [r₁, r₂, ..., rₙ] over context space."""
     rules: List[TarlRule] = field(default_factory=list)
     source: str = ""
     name: str = "unnamed"
+    # Phase 2: composition
+    parent: Optional[str] = None
+    composition: Optional[CompositionOp] = None
+    includes: List[TarlPolicyRef] = field(default_factory=list)
+    has_stop: bool = False
+    # Phase 5 stubs: temporal versioning
+    version: Optional[str] = None
+    supersedes: Optional[str] = None
+    valid_from: Optional[str] = None
+    valid_until: Optional[str] = None
+    on_expiry: Optional[TarlVerdict] = None
 
     def __str__(self) -> str:
-        lines = [f"policy {self.name}:"]
+        header = f"policy {self.name}"
+        if self.composition and self.parent:
+            header += f" {self.composition.value} {self.parent}"
+        if self.version:
+            header += f" v{self.version}"
+        lines = [f"{header}:"]
+        for ref in self.includes:
+            alias_part = f" AS {ref.alias}" if ref.alias else ""
+            if ref.is_file:
+                lines.append(f'  INCLUDE "{ref.name}"{alias_part}')
+            else:
+                lines.append(f"  INCLUDE {ref.name}{alias_part}")
         for r in self.rules:
             lines.append(f"  {r}")
+        if self.has_stop:
+            lines.append("  STOP")
         return "\n".join(lines)
 
 
@@ -96,6 +147,28 @@ class TarlDecision:
 
     def __str__(self) -> str:
         return f"[{self.verdict.value}] {self.reason}"
+
+
+@dataclass
+class TarlPolicySet:
+    """
+    A named composition of multiple policies evaluated with set operators.
+
+    groups: list of (SetOp, [policy_name, ...])
+    Each group produces a verdict via its operator.
+    The final verdict is the meet (∧) of all group verdicts.
+    """
+    name: str
+    groups: List[Tuple[SetOp, List[str]]] = field(default_factory=list)
+    default_verdict: TarlVerdict = TarlVerdict.DENY
+    source: str = ""
+
+    def __str__(self) -> str:
+        lines = [f"policy_set {self.name}:"]
+        for op, names in self.groups:
+            lines.append(f"  combine {op.value} [{', '.join(names)}]")
+        lines.append(f"  default: {self.default_verdict.value}")
+        return "\n".join(lines)
 
 
 # Ground state. Nothing crosses without an explicit ALLOW.
