@@ -7,24 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- Optional dev dependencies: pytest, black, ruff, mypy
-- Pre-commit hooks: version sync, pyproject validation, entry point checks
-- GPG signing guide for wheel releases (docs/SIGNING.md)
-- CI enhancement: setuptools version pinning in release workflow
-- CI enhancement: wheel contents verification step
-- Comprehensive governance model documentation (docs/governance_model.md)
-
-### Changed
-- Enhanced .gitignore with test/coverage/type-checking artifacts
-- Expanded build model audit and documentation
+## [0.1.5] - 2026-06-19
 
 ### Fixed
-- LICENSE copyright year: updated to 2025-2026 range
-- Test suite: fixed utf.tarl.spec import in test_tarl.py
-- Package build: moved tarl/spec.py into src/utf/tarl/ (wheel inclusion)
-- Console scripts: added tscg, tscg-b, tarl, shadow-thirst to entry points
-- CLI: tscg-b now accepts --help/-h flags
+- TarlRuntime.evaluate(): preserve first-match-wins semantics by collecting futures in submission order (not completion order)
+- utf.tarl public API: export TarlVerdict, TarlDecision, TarlPolicy, TarlRule, DEFAULT_DENY, TarlRuntime from __init__.py
+- tests/test_tarl.py: sys.path now points to src/ (not repo root) to avoid ModuleNotFoundError
 
 ---
 
@@ -40,14 +28,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reserved Tier 5/6 security keywords documented in GRAMMAR.md
 - Smoke test workflow (CI): validates all CLI entry points and imports on Python 3.11, 3.12
 - 6 console script entry points: thirsty, thirst-of-gods, tarl, tscg, tscg-b, shadow-thirst
+- Optional dev dependencies: pytest, black, ruff, mypy
+- Pre-commit hooks: version sync, pyproject validation, entry point checks
+- GPG signing guide for wheel releases (docs/SIGNING.md)
+- CI enhancement: setuptools version pinning in release workflow
+- CI enhancement: wheel contents verification step
+- Comprehensive governance model documentation (docs/governance_model.md)
+
+### Changed
+- Package structure: added thirsty_lang shim package for import parity
+- Enhanced .gitignore with test/coverage/type-checking artifacts
 
 ### Fixed
 - Govern --auto-tarl TarlRuntime evaluation (indentation + body_len)
 - TarlRuntime.body_len now uses BlockStmt.stmts correctly
 - Double-print bug in drink/pour operations (now return None)
-
-### Changed
-- Package structure: added thirsty_lang shim package for import parity
+- LICENSE copyright year: updated to 2025-2026 range
+- Console scripts: added tscg, tscg-b, tarl, shadow-thirst to entry points
+- CLI: tscg-b now accepts --help/-h flags
 
 ---
 
@@ -106,17 +104,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased] Future Roadmap
+## Future Roadmap
 
-### Planned for 0.1.5+
-- Pre-commit hook integration for contributor workflow
+### Planned for 0.1.6+
+- Pre-commit hook integration for contributor workflow (expanded)
 - GPG-signed wheel releases
 - Extended type checking (mypy integration)
 - Code coverage tracking
 - Automated changelog generation
-- Tier 2 enhancements (task scheduling, network policies)
 
 ### Planned for 0.2.0+
+- Tier 2 language enhancements (task scheduling, network policies)
 - Tier 3-6 language tiers
 - External system integration (HTTP, SQL, etc.)
 - Advanced governance models

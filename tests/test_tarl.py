@@ -5,7 +5,7 @@ Tests policy parsing, SafeExpr evaluation, ALLOW/DENY/ESCALATE verdicts, and run
 import sys
 import os
 import tempfile
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from utf.tarl.spec import TarlVerdict, TarlDecision, TarlPolicy, TarlRule, DEFAULT_DENY
 from utf.tarl.core import PolicyParser, SafeExpr, evaluate_policy

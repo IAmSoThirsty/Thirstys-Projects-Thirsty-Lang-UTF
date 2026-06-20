@@ -1,7 +1,7 @@
 """
 T.A.R.L. Runtime — LRU-cached, parallel policy evaluation with adaptive ordering.
 """
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 from typing import Optional
 from utf.tarl.spec import TarlVerdict, TarlDecision, TarlPolicy, TarlRule, DEFAULT_DENY
@@ -90,31 +90,36 @@ class TarlRuntime:
             reverse=True
         )
 
-        # Submit all rules for evaluation
-        futures = {}
+        # Submit all rules for evaluation with index tracking
+        futures_by_idx = {}
         for idx in ordered_indices:
             rule = policy.rules[idx]
             future = self.executor.submit(self._evaluate_rule, rule, context)
-            futures[future] = (idx, rule)
+            futures_by_idx[idx] = (future, rule)
 
-        # Collect results in order of submission (most-hit first)
-        for future in as_completed(futures):
-            idx, rule = futures[future]
+        # Collect results into a dict keyed by index
+        results = {}
+        for idx, (future, rule) in futures_by_idx.items():
             try:
                 matched, decision = future.result()
-                if matched:
-                    # Update hit count
-                    self._hit_counts[idx] = self._hit_counts.get(idx, 0) + 1
-                    result = TarlDecision(
-                        verdict=decision.verdict,
-                        reason=decision.reason or f"Rule matched: {rule}",
-                        rule_index=idx,
-                        matched_rule=str(rule)
-                    )
-                    self.cache.put(cache_key, result)
-                    return result
+                results[idx] = (matched, decision, rule)
             except Exception:
-                continue
+                results[idx] = (False, TarlDecision(verdict=TarlVerdict.DENY, reason="Evaluation error"), rule)
+
+        # Iterate in submission order (most-hit first) to find first match
+        for idx in ordered_indices:
+            matched, decision, rule = results[idx]
+            if matched:
+                # Update hit count
+                self._hit_counts[idx] = self._hit_counts.get(idx, 0) + 1
+                result = TarlDecision(
+                    verdict=decision.verdict,
+                    reason=decision.reason or f"Rule matched: {rule}",
+                    rule_index=idx,
+                    matched_rule=str(rule)
+                )
+                self.cache.put(cache_key, result)
+                return result
 
         # Default deny
         result = DEFAULT_DENY
