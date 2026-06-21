@@ -39,6 +39,9 @@ class PolicyComposer:
     """
     Registry and evaluator for composed T.A.R.L. policies.
 
+    Phase 5: temporal window enforcement and policy succession (revert_to)
+    are applied automatically before EXTENDS/RESTRICTS dispatch.
+
     Usage:
         composer = PolicyComposer()
         composer.register(base_policy)
@@ -131,7 +134,23 @@ class PolicyComposer:
         chain: FrozenSet[str],
     ) -> TarlDecision:
         """Dispatch to the correct composition handler."""
-        from utf.tarl.core import evaluate_policy
+        from utf.tarl.core import evaluate_policy, _check_policy_temporal
+
+        # Phase 5: temporal window check before any rule evaluation.
+        # If the policy has a revert_to target registered in this composer,
+        # evaluate that policy instead (succession). Otherwise return the
+        # on_expiry verdict (or ESCALATE).
+        temporal = _check_policy_temporal(policy)
+        if temporal is not None:
+            if policy.revert_to and policy.revert_to in self._policies:
+                # Guard against succession cycles (A→B→A) using the same
+                # chain mechanism as EXTENDS/RESTRICTS.
+                self._check_cycle(policy.name, chain)
+                revert_policy = self._policies[policy.revert_to]
+                return self._evaluate_policy(
+                    revert_policy, context, chain | {policy.name}
+                )
+            return temporal
 
         # Pre-evaluate INCLUDE directives, inject into context copy
         ctx = dict(context)

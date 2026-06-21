@@ -90,13 +90,23 @@ class TarlPolicyRef:
 
 @dataclass
 class TarlRule:
-    """A single `when <condition> => VERDICT` rule."""
+    """A single `when <condition> => VERDICT [for: <duration>]` rule."""
     condition: str
     verdict: TarlVerdict
     source_line: int = 0
+    duration_seconds: Optional[int] = None  # time-bound verdict ("for: 4h")
 
     def __str__(self) -> str:
-        return f"when {self.condition} => {self.verdict.value}"
+        s = f"when {self.condition} => {self.verdict.value}"
+        if self.duration_seconds:
+            ds = self.duration_seconds
+            if ds % 3600 == 0:
+                s += f" for: {ds // 3600}h"
+            elif ds % 60 == 0:
+                s += f" for: {ds // 60}m"
+            else:
+                s += f" for: {ds}s"
+        return s
 
 
 @dataclass
@@ -110,12 +120,14 @@ class TarlPolicy:
     composition: Optional[CompositionOp] = None
     includes: List[TarlPolicyRef] = field(default_factory=list)
     has_stop: bool = False
-    # Phase 5 stubs: temporal versioning
+    # Phase 5: temporal governance
     version: Optional[str] = None
     supersedes: Optional[str] = None
-    valid_from: Optional[str] = None
-    valid_until: Optional[str] = None
-    on_expiry: Optional[TarlVerdict] = None
+    valid_from: Optional[str] = None      # ISO-8601; policy not effective before this
+    valid_until: Optional[str] = None     # ISO-8601; policy expires after this
+    on_expiry: Optional[TarlVerdict] = None  # verdict when outside window (default ESCALATE)
+    if_unresolved_after: Optional[int] = None  # seconds; auto-expire from valid_from
+    revert_to: Optional[str] = None            # policy name to evaluate on succession
 
     def __str__(self) -> str:
         header = f"policy {self.name}"
@@ -124,6 +136,23 @@ class TarlPolicy:
         if self.version:
             header += f" v{self.version}"
         lines = [f"{header}:"]
+        if self.valid_from:
+            lines.append(f"  valid_from: {self.valid_from}")
+        if self.valid_until:
+            lines.append(f"  valid_until: {self.valid_until}")
+        if self.supersedes:
+            lines.append(f"  supersedes: {self.supersedes}")
+        if self.on_expiry:
+            lines.append(f"  on_expiry: {self.on_expiry.value}")
+        if self.if_unresolved_after is not None and self.revert_to:
+            ds = self.if_unresolved_after
+            if ds % 3600 == 0:
+                dur = f"{ds // 3600}h"
+            elif ds % 60 == 0:
+                dur = f"{ds // 60}m"
+            else:
+                dur = f"{ds}s"
+            lines.append(f"  if_unresolved_after: {dur} => revert_to: {self.revert_to}")
         for ref in self.includes:
             alias_part = f" AS {ref.alias}" if ref.alias else ""
             if ref.is_file:
@@ -144,9 +173,36 @@ class TarlDecision:
     reason: str = ""
     rule_index: int = -1
     matched_rule: Optional[str] = None
+    expires_at: Optional[str] = None    # ISO-8601 UTC; set for time-bound verdicts
 
     def __str__(self) -> str:
-        return f"[{self.verdict.value}] {self.reason}"
+        s = f"[{self.verdict.value}] {self.reason}"
+        if self.expires_at:
+            s += f" (expires: {self.expires_at})"
+        return s
+
+    def is_expired(self) -> bool:
+        """
+        Return True if this decision carried a time-bound verdict that has
+        now elapsed.  Always False when expires_at is not set.
+
+        The engine stamps expires_at at evaluation time but never
+        re-evaluates automatically.  Callers that cache decisions must call
+        this method before acting on a stored result and re-evaluate when it
+        returns True.
+        """
+        if not self.expires_at:
+            return False
+        import datetime
+        try:
+            exp = datetime.datetime.fromisoformat(
+                self.expires_at.replace("Z", "+00:00")
+            )
+            if exp.tzinfo is None:
+                exp = exp.replace(tzinfo=datetime.timezone.utc)
+            return datetime.datetime.now(datetime.timezone.utc) > exp
+        except ValueError:
+            return False
 
 
 @dataclass
@@ -169,6 +225,82 @@ class TarlPolicySet:
             lines.append(f"  combine {op.value} [{', '.join(names)}]")
         lines.append(f"  default: {self.default_verdict.value}")
         return "\n".join(lines)
+
+
+@dataclass
+class TarlProof:
+    """
+    Cryptographic certificate of a policy evaluation.
+
+    Π = (H(P), H(c), k, v, T, σ)
+      H(P) — SHA-256 of exact policy source used
+      H(c) — SHA-256 of canonical context snapshot
+      k    — matched rule index (-1 = DEFAULT_DENY)
+      v    — final verdict
+      T    — evaluation trace: [{rule_index, condition, matched}, ...]
+      σ    — HMAC-SHA256 or Ed25519 signature over canonical encoding
+    """
+    policy_hash: str          # "sha256:<hex>"
+    context_hash: str         # "sha256:<hex>"
+    rule_index: int           # -1 = DEFAULT_DENY
+    matched_condition: str    # "" for DEFAULT_DENY
+    verdict: TarlVerdict
+    evaluated_at: str         # ISO-8601 UTC
+    trace: List[dict]         # [{rule_index, condition, matched}, ...]
+    signature: str            # "hmac-sha256:<hex>" or ""
+    key_id: str               # signing key identifier or ""
+
+    def canonical_bytes(self) -> bytes:
+        """Deterministic serialisation used for signing and verification."""
+        import json
+        data = {
+            "policy_hash": self.policy_hash,
+            "context_hash": self.context_hash,
+            "rule_index": self.rule_index,
+            "matched_condition": self.matched_condition,
+            "verdict": self.verdict.value,
+            "evaluated_at": self.evaluated_at,
+            "trace": self.trace,
+        }
+        return json.dumps(
+            data, sort_keys=True, separators=(',', ':')
+        ).encode('utf-8')
+
+    def to_dict(self) -> dict:
+        return {
+            "policy_hash": self.policy_hash,
+            "context_hash": self.context_hash,
+            "rule_index": self.rule_index,
+            "matched_condition": self.matched_condition,
+            "verdict": self.verdict.value,
+            "evaluated_at": self.evaluated_at,
+            "trace": list(self.trace),
+            "signature": self.signature,
+            "key_id": self.key_id,
+        }
+
+    def to_json(self) -> str:
+        import json
+        return json.dumps(self.to_dict(), indent=2)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TarlProof":
+        return cls(
+            policy_hash=d["policy_hash"],
+            context_hash=d["context_hash"],
+            rule_index=d["rule_index"],
+            matched_condition=d.get("matched_condition", ""),
+            verdict=TarlVerdict(d["verdict"]),
+            evaluated_at=d["evaluated_at"],
+            trace=d.get("trace", []),
+            signature=d.get("signature", ""),
+            key_id=d.get("key_id", ""),
+        )
+
+    @classmethod
+    def from_json(cls, s: str) -> "TarlProof":
+        import json
+        return cls.from_dict(json.loads(s))
 
 
 # Ground state. Nothing crosses without an explicit ALLOW.

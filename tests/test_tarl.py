@@ -218,6 +218,104 @@ class TestTarlRuntime:
         result = runtime.evaluate({}, "")
         assert result.verdict == TarlVerdict.DENY
 
+    def test_first_match_wins_survives_adaptive_ordering(self):
+        """Rule 0 must win even after rule 1 accumulates more hit-count hits."""
+        # Rule 0 matches x==1 → ALLOW
+        # Rule 1 matches x>=0 → DENY  (broader; would shadow rule 0 if evaluated first)
+        policy_text = "when x == 1 => ALLOW\nwhen x >= 0 => DENY"
+        rt = TarlRuntime()
+
+        # Warm up rule 1: 10 unique contexts that skip rule 0 and hit rule 1
+        for v in range(2, 12):
+            rt.evaluate({"x": v}, policy_text=policy_text)
+
+        # Now _hit_counts[1] == 10, _hit_counts[0] == 0
+        # Adaptive ordering would give ordered_indices = [1, 0]
+        # Result selection must still respect policy order [0, 1]
+        result = rt.evaluate({"x": 1}, policy_text=policy_text)
+        assert result.verdict == TarlVerdict.ALLOW, (
+            "First-match-wins violated: rule 1 (DENY) won over rule 0 (ALLOW)"
+        )
+        assert result.rule_index == 0
+
+
+class TestThrowStats:
+    """
+    Tests for TarlRuntime._throw_counts / throw_stats().
+
+    Conditions that throw through _evaluate_rule are those whose text passes
+    the RULE_RE regex (so they appear to be valid rules) but whose tokenisation
+    fails because they contain characters the lexer rejects (e.g. '@').
+    SafeExpr itself is designed to never raise — arithmetic, comparisons, and
+    safe functions all return False on error — so tokeniser failures are the
+    primary throw path in normal operation.
+    """
+
+    # Condition that passes RULE_RE but causes _tokenize to raise ValueError
+    _THROW_COND = "@BAD"       # '@' is not a valid token character
+    _THROW_RULE  = f"when {_THROW_COND} => DENY"
+
+    def test_clean_rule_has_zero_throw_count(self):
+        rt = TarlRuntime()
+        policy_text = 'when x == 1 => ALLOW'
+        rt.evaluate({"x": 1}, policy_text=policy_text)
+        rt.evaluate({"x": 2}, policy_text=policy_text)
+        assert rt.throw_stats() == {}
+
+    def test_throwing_rule_increments_throw_count(self):
+        # Use distinct contexts (v=0,1,2) so the LRU cache doesn't short-circuit
+        # re-evaluation — cached results skip _evaluate_rule and wouldn't count throws.
+        rt = TarlRuntime()
+        policy_text = f"{self._THROW_RULE}\nwhen x == 1 => ALLOW"
+        for v in range(3):
+            result = rt.evaluate({"x": 1, "v": v}, policy_text=policy_text)
+        assert result.verdict == TarlVerdict.ALLOW
+        stats = rt.throw_stats()
+        assert stats.get(0, 0) == 3, f"Expected 3 throws on rule 0, got {stats}"
+
+    def test_dead_by_exception_predicate(self):
+        # Rule 0 always throws; rule 1 always matches — canonical dead-by-exception
+        rt = TarlRuntime()
+        policy_text = f"{self._THROW_RULE}\nwhen true => ALLOW"
+        for _ in range(5):
+            rt.evaluate({}, policy_text=policy_text)
+        stats = rt.throw_stats()
+        assert stats.get(0, 0) > 0, "throw_count should be nonzero for always-throwing rule"
+        assert rt._hit_counts.get(0, 0) == 0, "hit_count must be zero for a never-matching rule"
+
+    def test_partially_broken_predicate_both_counts_nonzero(self):
+        # Two rules: rule 0 throws, rule 1 matches. After evaluation:
+        # throw_count[0] > 0 and hit_count[1] > 0 — two distinct signals.
+        rt = TarlRuntime()
+        policy_text = f"{self._THROW_RULE}\nwhen x == 1 => ALLOW"
+        rt.evaluate({"x": 1}, policy_text=policy_text)
+        stats = rt.throw_stats()
+        assert stats.get(0, 0) > 0, "rule 0 should have throw_count > 0"
+        assert rt._hit_counts.get(1, 0) > 0, "rule 1 should have hit_count > 0"
+
+    def test_throw_stats_returns_copy(self):
+        rt = TarlRuntime()
+        s1 = rt.throw_stats()
+        s1["fake"] = 999
+        assert "fake" not in rt.throw_stats()
+
+    def test_set_policy_resets_throw_counts(self):
+        from utf.tarl.core import PolicyParser
+        rt = TarlRuntime()
+        policy_text = f"{self._THROW_RULE}\nwhen true => ALLOW"
+        rt.evaluate({}, policy_text=policy_text)
+        assert rt.throw_stats() != {}, "throw_count should be nonzero before reset"
+        rt.set_policy(PolicyParser.parse("when x == 1 => ALLOW"))
+        assert rt.throw_stats() == {}
+
+    def test_evaluate_with_proof_also_counts_throws(self):
+        rt = TarlRuntime()
+        policy_text = f"{self._THROW_RULE}\nwhen true => ALLOW"
+        for _ in range(2):
+            rt.evaluate_with_proof({}, policy_text=policy_text)
+        stats = rt.throw_stats()
+        assert stats.get(0, 0) == 2
+
 
 class TestE2E:
     """End-to-end tests for TARL."""

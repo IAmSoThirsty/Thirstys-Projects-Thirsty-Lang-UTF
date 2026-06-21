@@ -6,12 +6,29 @@ from utf.tarl.spec import (
     TarlRule,
     TarlPolicyRef,
     TarlPolicySet,
+    TarlProof,
     CompositionOp,
     SetOp,
     DEFAULT_DENY,
 )
 from utf.tarl.runtime import TarlRuntime
 from utf.tarl.composer import PolicyComposer, CompositionError
+from utf.tarl.analyzer import (
+    PolicyAnalyzer,
+    AnalysisResult,
+    CoverageGap,
+    ShadowedRule,
+    ConflictPair,
+)
+from utf.tarl.verifier import ProofVerifier, VerificationResult
+from utf.tarl.archive import TarlAuditArchive
+from utf.tarl.explainer import TarlExplainer, PolicyExplanation, RuleTrace
+from utf.tarl.tester import (
+    TarlTestRunner,
+    TarlTestSuiteResult,
+    TarlTestResult,
+    TarlTestCase,
+)
 
 __all__ = [
     "TarlVerdict",
@@ -20,10 +37,26 @@ __all__ = [
     "TarlRule",
     "TarlPolicyRef",
     "TarlPolicySet",
+    "TarlProof",
     "CompositionOp",
     "SetOp",
     "DEFAULT_DENY",
     "TarlRuntime",
     "PolicyComposer",
     "CompositionError",
+    "PolicyAnalyzer",
+    "AnalysisResult",
+    "CoverageGap",
+    "ShadowedRule",
+    "ConflictPair",
+    "ProofVerifier",
+    "VerificationResult",
+    "TarlAuditArchive",
+    "TarlExplainer",
+    "PolicyExplanation",
+    "RuleTrace",
+    "TarlTestRunner",
+    "TarlTestSuiteResult",
+    "TarlTestResult",
+    "TarlTestCase",
 ]

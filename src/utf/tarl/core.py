@@ -21,6 +21,7 @@ Phase 2 — PolicyParser supports:
 """
 import re
 import datetime
+from typing import Optional
 from utf.tarl.spec import (
     TarlVerdict, TarlDecision, TarlPolicy, TarlRule, DEFAULT_DENY,
     CompositionOp, SetOp, TarlPolicyRef, TarlPolicySet,
@@ -96,7 +97,8 @@ class PolicyParser:
     """Parses TARL policy text into TarlPolicy / TarlPolicySet objects."""
 
     RULE_RE = re.compile(
-        r"when\s+(.+?)\s*=>\s*(ALLOW|DENY|ESCALATE)\s*"
+        r"when\s+(.+?)\s*=>\s*(ALLOW|DENY|ESCALATE)"
+        r"(?:\s+for:\s*(\S+))?\s*$"
     )
     # policy <name> [EXTENDS|RESTRICTS <parent>] [v<ver>] [:]
     POLICY_HEADER_RE = re.compile(
@@ -123,6 +125,10 @@ class PolicyParser:
     # valid_from|valid_until|supersedes|on_expiry: <value>
     METADATA_RE = re.compile(
         r"(valid_from|valid_until|supersedes|on_expiry)\s*:\s*(.+)"
+    )
+    # if_unresolved_after: <duration> => revert_to: <policy_name>
+    IF_UNRESOLVED_RE = re.compile(
+        r"if_unresolved_after:\s*(\S+)\s*=>\s*revert_to:\s*(\w+)"
     )
 
     @classmethod
@@ -208,6 +214,14 @@ class PolicyParser:
                 current_policy.includes.append(ref)
                 continue
 
+            m_iu = cls.IF_UNRESOLVED_RE.match(line)
+            if m_iu:
+                dur = _parse_duration(m_iu.group(1))
+                if dur is not None:
+                    current_policy.if_unresolved_after = dur
+                current_policy.revert_to = m_iu.group(2)
+                continue
+
             m_meta = cls.METADATA_RE.match(line)
             if m_meta:
                 key, val = m_meta.group(1), m_meta.group(2).strip()
@@ -230,10 +244,15 @@ class PolicyParser:
             if m_rule:
                 condition = m_rule.group(1).strip()
                 verdict = TarlVerdict(m_rule.group(2).upper())
+                duration = (
+                    _parse_duration(m_rule.group(3))
+                    if m_rule.group(3) else None
+                )
                 current_policy.rules.append(TarlRule(
                     condition=condition,
                     verdict=verdict,
                     source_line=lineno,
+                    duration_seconds=duration,
                 ))
 
         _flush()
@@ -250,6 +269,7 @@ class PolicyParser:
             if isinstance(item, TarlPolicy):
                 if item.name == "unnamed" and name != "unnamed":
                     item.name = name
+                item.source = text  # full source for proof hashing
                 return item
         return TarlPolicy(source=text, name=name)
 
@@ -411,6 +431,94 @@ class PolicyParser:
 
         tokens.append(ExprToken(EOF, None, i))
         return tokens
+
+
+# ── Duration parsing / temporal utilities ────────────────────────────────────
+
+def _parse_duration(s: str) -> Optional[int]:
+    """
+    Parse a human-readable duration string into seconds.
+    Supports units: s (seconds), m (minutes), h (hours), d (days), w (weeks).
+    Compound forms like '1h30m' are supported. Returns None on parse error.
+
+    Examples: '4h' → 14400, '30m' → 1800, '1d' → 86400, '1h30m' → 5400
+    """
+    if not s:
+        return None
+    units = {'w': 604800, 'd': 86400, 'h': 3600, 'm': 60, 's': 1}
+    total = 0
+    num = ""
+    for ch in s.strip():
+        if ch.isdigit():
+            num += ch
+        elif ch in units:
+            if not num:
+                return None
+            total += int(num) * units[ch]
+            num = ""
+        else:
+            return None
+    if num:  # trailing digits without unit → seconds
+        total += int(num)
+    return total if total > 0 else None
+
+
+def _check_policy_temporal(policy: "TarlPolicy") -> Optional["TarlDecision"]:
+    """
+    Check whether a policy is within its declared effective time window.
+
+    Returns a TarlDecision when the policy is outside its window (not-yet-active
+    or expired/auto-expired), using policy.on_expiry or ESCALATE as the verdict.
+    Returns None when the policy is in-window and should be evaluated normally.
+    """
+    now = datetime.datetime.now(datetime.timezone.utc)
+    expiry_verdict = policy.on_expiry or TarlVerdict.ESCALATE
+
+    def _parse_dt(s: str) -> Optional[datetime.datetime]:
+        s = s.strip().replace("Z", "+00:00")
+        try:
+            dt = datetime.datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+            return dt
+        except ValueError:
+            return None
+
+    # Not-yet-active check
+    if policy.valid_from:
+        vf = _parse_dt(policy.valid_from)
+        if vf and now < vf:
+            return TarlDecision(
+                verdict=expiry_verdict,
+                reason=(
+                    f"Policy '{policy.name}' not yet effective "
+                    f"(valid_from: {policy.valid_from})"
+                ),
+            )
+
+    # Build effective_until = min(valid_until, valid_from + if_unresolved_after)
+    effective_until: Optional[datetime.datetime] = None
+    if policy.valid_until:
+        effective_until = _parse_dt(policy.valid_until)
+    if policy.if_unresolved_after is not None and policy.valid_from:
+        vf = _parse_dt(policy.valid_from)
+        if vf:
+            succession_at = vf + datetime.timedelta(
+                seconds=policy.if_unresolved_after
+            )
+            if effective_until is None or succession_at < effective_until:
+                effective_until = succession_at
+
+    if effective_until and now > effective_until:
+        return TarlDecision(
+            verdict=expiry_verdict,
+            reason=(
+                f"Policy '{policy.name}' expired "
+                f"(effective until: {effective_until.isoformat()})"
+            ),
+        )
+
+    return None
 
 
 # ── Temporal builtins ────────────────────────────────────────────────────────
@@ -863,21 +971,35 @@ def evaluate_policy(
     """
     Evaluate a policy against a context dict.
     First-match-wins: Eval(P,c) = vₖ where k=min{i|φᵢ(c)=true}, else DENY.
+
+    Phase 5: enforces valid_from/valid_until/if_unresolved_after windows and
+    computes expires_at for time-bound verdicts (duration_seconds > 0).
     """
     if policy is None:
         if not policy_text:
             return DEFAULT_DENY
         policy = PolicyParser.parse(policy_text)
 
+    temporal = _check_policy_temporal(policy)
+    if temporal is not None:
+        return temporal
+
     for i, rule in enumerate(policy.rules):
         try:
             result = SafeExpr.evaluate(rule.condition, context)
             if result:
+                expires_at = None
+                if rule.duration_seconds:
+                    expires_at = (
+                        datetime.datetime.now(datetime.timezone.utc)
+                        + datetime.timedelta(seconds=rule.duration_seconds)
+                    ).isoformat(timespec="seconds")
                 return TarlDecision(
                     verdict=rule.verdict,
                     reason=f"Rule matched: {rule}",
                     rule_index=i,
                     matched_rule=str(rule),
+                    expires_at=expires_at,
                 )
         except Exception:
             continue

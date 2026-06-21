@@ -7,6 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.2.0] - 2026-06-20
+
+### Added — Phase 1: Condition Algebra
+
+- Replaced regex tokenizer with a proper state-machine lexer in `core.py`
+- Nested attribute access: `user.role.clearance` walks nested context dicts; missing key returns `false` (never errors)
+- Full arithmetic operators: `-`, `*`, `/`, `%` alongside existing `+`
+- Set membership: `value IN [...]` and `value NOT IN [...]` as first-class operators
+- Dynamic source binding: `source:name` references a live data provider registered via `TarlRuntime.register_source(name, callable)`; missing source evaluates to `[]` (never silently ALLOWs)
+- Temporal builtins injected at evaluation time: `CURRENT_HOUR`, `CURRENT_DAY`, `CURRENT_WEEKDAY`, `CURRENT_MONTH`, `CURRENT_YEAR`, `CURRENT_TIMESTAMP`
+- String predicates: `MATCHES(field, regex)`, `STARTS_WITH`, `ENDS_WITH`, `CONTAINS` — safe, no eval, no import
+- Utility functions: `LEN`, `LOWER`, `UPPER`, `ELAPSED_SINCE(iso_timestamp)`
+- Universal/existential quantifiers: `ALL(collection, v -> condition)`, `ANY(collection, v -> condition)` over context list values
+
+### Added — Phase 2: Policy Composition
+
+- `EXTENDS` operator: child rules evaluated first; falls through to parent on no match; `STOP` keyword blocks parent fallthrough
+- `RESTRICTS` operator: child and parent evaluated independently; final verdict = `meet(child, parent)` — stricter wins
+- `INCLUDE "file.tarl" AS alias` and `INCLUDE policy_name AS alias`: pre-evaluate sub-policies, inject verdicts as context variables
+- `policy_set` blocks with `combine UNION|INTERSECT|MAJORITY [...]` group operators
+- New `composer.py`: `PolicyComposer` registry/evaluator for composed policies; `CompositionError` for unknown parents and circular references
+- Cycle detection via `chain: FrozenSet[str]` — catches `A EXTENDS B EXTENDS A` at evaluation time
+
+### Added — Phase 3: Static Analysis Engine
+
+- New `analyzer.py`: `PolicyAnalyzer` backed by Z3 SMT solver (optional dep: `pip install thirsty-lang[analysis]`)
+- **Coverage analysis** (`tarl analyze coverage`): finds context regions that fall through to DEFAULT_DENY
+- **Dead rule detection** (`tarl analyze shadows`): identifies rules that can never match because an earlier rule always fires first
+- **Conflict detection** (`tarl analyze conflicts`): finds pairs of rules with overlapping conditions and different verdicts
+- **Policy equivalence** (`tarl analyze equiv policy_a.tarl policy_b.tarl`): proves two policies produce identical verdicts for all contexts
+- **Refinement check** (`tarl analyze refines strict.tarl permissive.tarl`): proves every context the strict policy allows is also allowed by the permissive policy
+- `tarl analyze` CLI command; graceful degradation when Z3 is absent
+
+### Added — Phase 4: Proof-Carrying Evaluation
+
+- `TarlProof` dataclass: `Π = (H(P), H(c), k, v, T, σ)` — SHA-256 policy hash, SHA-256 context hash, matched rule index, verdict, evaluation trace, HMAC-SHA256 signature
+- `TarlRuntime.evaluate_with_proof()`: returns `(TarlDecision, TarlProof)` with full per-rule trace
+- HMAC-SHA256 signing via `TarlRuntime.set_signing_key(key_id, secret_bytes)`; unsigned proofs are valid (signature field is empty string, not absent)
+- New `verifier.py`: `ProofVerifier` and `VerificationResult` for independent verification without the runtime
+- `tarl verify proof.json [--policy policy.tarl] [--hmac-key id:hex]` CLI command; exits 0 on valid, 1 on tampered/invalid
+- Proof canonical bytes are deterministic (JSON, sorted keys) — verifiable by any implementation
+
+### Added — Phase 5: Temporal Governance
+
+- Time-bound verdicts: `when condition => ALLOW for: 4h` — `TarlDecision.expires_at` stamped at evaluation time
+- `TarlDecision.is_expired()`: caller re-check hook; engine stamps `expires_at` but never auto-re-evaluates
+- Policy effective windows: `valid_from`, `valid_until`, `on_expiry` directives on policy blocks
+- Policy succession: `if_unresolved_after: 8h => revert_to: baseline_access` — emergency policies with built-in sunset clauses
+- Succession cycle detection in `PolicyComposer._evaluate_policy()` — cycles raise `CompositionError`, not `RecursionError`
+- `TarlAuditArchive`: append-only SQLite-backed proof store; thread-safe via `threading.Lock`; `check_same_thread=False`
+- `TarlAuditArchive.query(verifier=)`: optional `ProofVerifier` filters proofs with cryptographically invalid signatures; unsigned proofs pass through; without a verifier, rows are returned with no tamper check
+- `TarlRuntime.set_archive(archive)`: proofs from `evaluate_with_proof()` stored automatically
+- Temporal policies bypass the LRU cache so window checks and `expires_at` timestamps are never stale
+- `tarl audit query [--db] [--verdict] [--from] [--to] [--limit] [--json]` CLI command
+- New `archive.py`
+
+### Added — Phase 6: Governance IDE Surface
+
+- `TarlExplainer`: walks every rule in policy order, records `RuleTrace` (matched / not-matched / skipped-after-first-hit), surfaces temporal exits, stamps `expires_at`; `PolicyExplanation.format(verbose=)` and `.to_dict()`
+- `tarl explain <policy.tarl> [--context JSON] [--verbose] [--json]` CLI command
+- `TarlTestRunner`: parses and runs `.tarl_test` test suites; `run_file()`, `run_directory()` (recursive), `run_text()`
+- `.tarl_test` file format: `policy_file:` or inline `policy:` block, `test "name":` cases with `context:` (JSON), `expect: ALLOW|DENY|ESCALATE`, optional `expect_rule: <int>`; malformed files surface as `load_error`, never crash the run
+- `tarl test <path-or-dir> [--json]` CLI command; exits 1 on any failure
+- `TarlLanguageServer` (LSP, JSON-RPC over stdio): full text-document sync, syntax diagnostics (synchronous, published immediately), Z3 dead-rule warnings and coverage-gap hints (async daemon thread with version-guard to discard stale results), thread-safe stdout writes via `_write_lock`
+- LSP hover: markdown card for rule lines (verdict, condition, time-bound duration) and policy headers (composition, effective window)
+- LSP definition: resolves `EXTENDS`/`RESTRICTS` parent to same-document location; resolves `INCLUDE "file.tarl"` to file URI
+- `tarl-lsp` console script entry point
+- New `explainer.py`, `tester.py`, `lsp.py`
+
+### Added — Runtime Observability
+
+- `TarlRuntime.throw_stats() -> dict`: per-rule exception frequency counter, symmetric to `_hit_counts`
+- `_evaluate_rule()` now returns `(matched, decision, threw: bool)`; `_throw_counts` incremented in both `evaluate()` and `evaluate_with_proof()`
+- `set_policy()` resets `_throw_counts` alongside `_hit_counts`
+- Dead-by-exception predicate: `throw_count > 0 and hit_count == 0`; partial-throw state: both nonzero
+- Counter reflects distinct cache-missing contexts that threw, not call frequency; documented in `throw_stats()` docstring
+
+### Fixed
+
+- `TarlRuntime.evaluate()`: result selection now iterates in policy order (`range(len(policy.rules))`) rather than hit-count order, preserving first-match-wins semantics under adaptive ordering — a rule with more historical hits could previously displace an earlier rule that also matched
+- `PolicyComposer`: succession cycle detection (`revert_to: A → B → A`) now raises `CompositionError` using the same `chain: FrozenSet[str]` mechanism as `EXTENDS`/`RESTRICTS`; previously would hit Python's recursion limit
+- `TarlAuditArchive.query()`: added `verifier=` parameter; without it, rows were returned from SQLite with no tamper check despite the archive being positioned as tamper-evident storage
+
+---
+
 ## [0.1.5] - 2026-06-19
 
 ### Fixed
