@@ -36,7 +36,7 @@ jobs:
           unzip -l dist/*.whl | grep -E "\.py$|entry_points.txt" | head -20
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          user: __token__
-          password: ${{ secrets.thirsty_lang }}
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.thirsty_lang }}
+        run: python -m twine upload dist/*
